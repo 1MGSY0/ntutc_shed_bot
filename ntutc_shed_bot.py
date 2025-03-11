@@ -1,18 +1,29 @@
+import os
+import json
+import datetime
+import logging
 import gspread
+from flask import Flask, request
 from oauth2client.service_account import ServiceAccountCredentials
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, CallbackContext
-import datetime
-import requests
-import pandas as pd
+from telegram.ext import Dispatcher, CommandHandler, CallbackQueryHandler, MessageHandler, filters, CallbackContext, Application, AIORateLimiter, ExtBot
 
-# Telegram Bot Config
-TOKEN = "7868047897:AAG1Fk3bcJQteZDD8mhj3tzqdyNrKJSdr98"
-CHANNEL_USERNAME = "@ntutc_shed_bot"  # Your Telegram channel where logs are posted
+# Load environment variables (Cloud Run doesn’t store local files)
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME")
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
+GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
-# Google Sheets Setup
-SPREADSHEET_ID = "1LUImOcGIkUa3r_8pssFkRay_f47nY8EqUzlK07cS4Kw"
-SHEET_NAME = "ShedLogAY2425"
+# Set up Flask app
+app = Flask(__name__)
+
+# Google Sheets Authentication
+def authenticate_google_sheets():
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
+    credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    client = gspread.authorize(credentials)
+    return client.open_by_key(SPREADSHEET_ID).sheet1
 
 # Suggested purposes
 SUGGESTED_PURPOSES = ["Weekly sessions"]
@@ -20,12 +31,9 @@ SUGGESTED_PURPOSES = ["Weekly sessions"]
 # User state tracking for purpose input
 user_states = {}
 
-# Authenticate Google Sheets
-def authenticate_google_sheets():
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    credentials = ServiceAccountCredentials.from_json_keyfile_name("google_credentials.json", scope)
-    client = gspread.authorize(credentials)
-    return client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+# Initialize Telegram bot
+bot = ExtBot(token=TOKEN)
+dispatcher = Dispatcher(bot=bot, update_queue=None, use_context=True, rate_limiter=AIORateLimiter())
 
 # Start Command
 async def start(update: Update, context: CallbackContext) -> None:
@@ -60,7 +68,7 @@ async def log_entry(update: Update, context: CallbackContext) -> None:
         await update.message.reply_text("❌ Please start the process again using /start.")
         return
 
-    action = user_states.pop(user_id)  # Retrieve and remove user action
+    action = user_states.pop(user_id)
 
     now = datetime.datetime.now()
     date = now.strftime("%Y-%m-%d")
@@ -89,15 +97,18 @@ async def log_entry(update: Update, context: CallbackContext) -> None:
         await update.message.reply_text("❌ Error logging data. Try again later.")
         print("Google Sheets Error:", e)
 
-# Main Function
-def main():
-    app = Application.builder().token(TOKEN).build()
+# Webhook route for Telegram updates
+@app.route(f"/{TOKEN}", methods=["POST"])
+def webhook():
+    update = Update.de_json(request.get_json(), bot)
+    dispatcher.process_update(update)
+    return "OK", 200
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(action_selected, pattern="^(open|close)$"))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_entry))
+# Health check route for UptimeRobot
+@app.route("/")
+def index():
+    return "Bot is running!", 200
 
-    app.run_polling()
-
-if __name__ == '__main__':
-    main()
+# Run Flask app
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
