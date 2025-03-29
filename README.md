@@ -29,9 +29,12 @@ This is a Telegram bot that allows NTU Tennis Club EXCO to log when they open or
 
 - Telegram Bot with inline button-based interaction
 - Custom hour/minute time picker (5-minute steps)
-- Google Sheets logging
+- Google Sheets logging (free 5000 interference per month)
 - Google Cloud Run deployment (24/7 uptime)
 - Private Channel support with real-time updates
+
+Service provider: Google cloud run
+Monitoring bot: UptimeRobot
 
 ---
 
@@ -216,7 +219,6 @@ This script deploys your bot and sets up the environment on Cloud Run.
 - Channel must be private, and bot must have admin permissions to post messages.
 - Ensure `requirements.txt` includes `python-telegram-bot`, `gspread`, `oauth2client`, and `quart`.
 - Quart is used to handle incoming webhook requests from Telegram via Google Cloud Run.
-- Gooogle sheet API is free for first 5000 instances
 
 ---
 
