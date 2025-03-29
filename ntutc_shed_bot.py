@@ -7,9 +7,8 @@ import asyncio
 import uvicorn
 import base64
 from oauth2client.service_account import ServiceAccountCredentials
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, BotCommand
 from telegram.ext import (
-    Application,
     ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
@@ -149,6 +148,24 @@ async def minute_selected(update: Update, context: CallbackContext) -> None:
         logger.error(f"Google Sheets Error: {e}")
         await query.message.reply_text("❌ Error logging data. Try again later.")
 
+async def guideline(update: Update, context: CallbackContext) -> None:
+    guideline_text = (
+        "Please read the guideline for the shed usage.\n\n"
+        "These guidelines ensure the responsible and secure use of the SRC tennis court shed. "
+        "Compliance is mandatory for all authorized users.\n\n"
+        "SHED USAGE GUIDELINE: "
+        "https://docs.google.com/document/d/1-lut9Nqr645IN6kR7awaQG4txnc8U-Vh3uoJg5xcRgM/edit?usp=sharing"
+    )
+    await update.message.reply_text(guideline_text)
+
+#Set bot commands
+async def set_bot_commands(application):
+    commands = [
+        BotCommand("start", "Start the shed usage logger"),
+        BotCommand("guideline", "View shed usage guidelines"),
+    ]
+    await application.bot.set_my_commands(commands)
+
 async def start_bot():
     print("Starting Telegram bot...")
     await application.initialize()
@@ -165,6 +182,7 @@ async def start_bot():
 
 #Register Handlers once
 application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("guideline", guideline))
 application.add_handler(CallbackQueryHandler(action_selected, pattern="^(open|close|open & close)$"))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, purpose_entered))
 application.add_handler(CallbackQueryHandler(hour_selected, pattern="^hour_\\d+$"))
@@ -189,6 +207,7 @@ if __name__ == "__main__":
 
     async def run_all():
         await application.initialize()
+        await set_bot_commands(application)
         await application.start()
         print("✅ Bot initialized and handlers registered.")
 
