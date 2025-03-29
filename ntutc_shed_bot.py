@@ -3,112 +3,199 @@ import json
 import datetime
 import logging
 import gspread
-from flask import Flask, request
+import asyncio 
+import uvicorn
+import base64
 from oauth2client.service_account import ServiceAccountCredentials
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
-from telegram.ext import Dispatcher, CommandHandler, CallbackQueryHandler, MessageHandler, filters, CallbackContext, Application, AIORateLimiter, ExtBot
+from telegram.ext import (
+    Application,
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    filters,
+    CallbackContext,
+)
+from quart import Quart, request, jsonify  
 
-# Load environment variables (Cloud Run doesn’t store local files)
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME")
-SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
-GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
+# Load environment variables
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")
+GOOGLE_CREDENTIALS_JSON = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+PROJECT_ID = os.environ.get("PROJECT_ID")
+CHANNEL_USERNAME = os.environ.get("CHANNEL_USERNAME")
+TOPIC_THREAD_ID = os.getenv("TOPIC_THREAD_ID")
 
-# Set up Flask app
-app = Flask(__name__)
+# Logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(PROJECT_ID)
 
-# Google Sheets Authentication
-def authenticate_google_sheets():
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
-    credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    client = gspread.authorize(credentials)
-    return client.open_by_key(SPREADSHEET_ID).sheet1
+# Telegram Bot Setup
+application = ApplicationBuilder().token(TOKEN).build()
+
+# Flask Setup
+app = Quart(__name__)
 
 # Suggested purposes
 SUGGESTED_PURPOSES = ["Weekly sessions"]
 
-# User state tracking for purpose input
+# User state tracking
 user_states = {}
 
-# Initialize Telegram bot
-bot = ExtBot(token=TOKEN)
-dispatcher = Dispatcher(bot=bot, update_queue=None, use_context=True, rate_limiter=AIORateLimiter())
+# Google Sheets Setup
+def authenticate_google_sheets():
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
-# Start Command
+    logger = logging.getLogger(PROJECT_ID)
+
+    try:
+        decoded_json = base64.b64decode(GOOGLE_CREDENTIALS_JSON).decode("utf-8")
+        creds_dict = json.loads(decoded_json)
+        print("Decoded preview:", decoded_json[:100])
+    except Exception as e:
+        logger.error("❌ Failed to decode GOOGLE_CREDENTIALS_JSON: %s", e)
+        creds_dict = {}
+    credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    client = gspread.authorize(credentials)
+    return client.open_by_key(SPREADSHEET_ID).sheet1
+
+# Telegram Handlers
 async def start(update: Update, context: CallbackContext) -> None:
     keyboard = [
-        [InlineKeyboardButton("Open Shed", callback_data='open')],
-        [InlineKeyboardButton("Close Shed", callback_data='close')]
+        [InlineKeyboardButton("Open & Close", callback_data='open & close')],
+        [InlineKeyboardButton("Open", callback_data='open')],
+        [InlineKeyboardButton("Close", callback_data='close')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Welcome! Select an option:", reply_markup=reply_markup)
+    await update.message.reply_text("Select your action:", reply_markup=reply_markup)
 
-# Handle Shed Open/Close Selection and Ask for Purpose
 async def action_selected(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     action = query.data.capitalize()
+    user_states[query.from_user.id] = {"action": action}
 
-    # Store action in user state
-    user_states[query.from_user.id] = action
-
-    # Show suggested purposes with a reply keyboard
     keyboard = [[purpose] for purpose in SUGGESTED_PURPOSES]
     reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    await query.message.reply_text(f"Enter purpose of {action} Shed:", reply_markup=reply_markup)
 
-    await query.message.reply_text(f"Please enter the purpose for {action}:\n(You can type your own or choose a suggestion below)", reply_markup=reply_markup)
-
-# Log Entry and Send to Telegram Channel
-async def log_entry(update: Update, context: CallbackContext) -> None:
+async def purpose_entered(update: Update, context: CallbackContext) -> None:
     user_id = update.message.from_user.id
-    user = update.message.from_user.username or update.message.from_user.full_name
     purpose = update.message.text.strip()
 
     if user_id not in user_states:
         await update.message.reply_text("❌ Please start the process again using /start.")
         return
 
-    action = user_states.pop(user_id)
+    user_states[user_id]["purpose"] = purpose
 
+    keyboard = [
+    [InlineKeyboardButton(f"{hour + i:02}", callback_data=f"hour_{hour + i}") for i in range(6)]
+    for hour in range(0, 24, 6)
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("🕒 Select the time *hour* (24-hour format):", parse_mode="Markdown", reply_markup=reply_markup)
+
+async def hour_selected(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    hour = int(query.data.split("_")[1])
+    user_states[query.from_user.id]["hour"] = hour
+
+    keyboard = [
+        [InlineKeyboardButton(f"{m:02}", callback_data=f"minute_{m}") for m in range(row, row + 30, 5)]
+        for row in range(0, 60, 30)
+    ]
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.message.reply_text("⏳ Select the time *minutes*:", parse_mode="Markdown", reply_markup=reply_markup)
+
+async def minute_selected(update: Update, context: CallbackContext) -> None:
+    query = update.callback_query
+    user_id = query.from_user.id
+    minute = int(query.data.split("_")[1])
+    state = user_states[user_id]
+
+    action = state["action"]
+    purpose = state["purpose"]
+    hour = state["hour"]
+    action_time = f"{hour:02}:{minute:02}"
     now = datetime.datetime.now()
     date = now.strftime("%Y-%m-%d")
-    time = now.strftime("%H:%M:%S")
     submitted_at = now.strftime("%Y-%m-%d %H:%M:%S")
 
     try:
         sheet = authenticate_google_sheets()
-
-        # Send log message to the Telegram Channel
         log_message = (
-            f"📌 *Shed Activity Log*\n"
-            f"👤 *User:* {user}\n"
-            f"📌 *Action:* {action}\n"
-            f"🎯 *Purpose:* {purpose}\n"
-            f"🕒 *Time:* {submitted_at}"
+            f"Shed Activity Log\n"
+            f"👤 {query.from_user.username or query.from_user.full_name}\n"
+            f"📌 {action}\n"
+            f"🎯 {purpose}\n"
+            f"🕒 {action_time}"
         )
+        chat_id = int(CHANNEL_USERNAME) if CHANNEL_USERNAME.startswith("-") else CHANNEL_USERNAME
+        if TOPIC_THREAD_ID:
+            await context.bot.send_message(chat_id=chat_id, text=log_message, message_thread_id=int(TOPIC_THREAD_ID))
+        else:
+            await context.bot.send_message(chat_id=chat_id, text=log_message)
 
-        message = await context.bot.send_message(chat_id=CHANNEL_USERNAME, text=log_message, parse_mode="Markdown")
-
-        # Store log entry in Google Sheets
-        sheet.append_row([user, action, purpose, date, time, submitted_at, str(message.message_id)])
-
-        await update.message.reply_text(f"✅ {action} logged for '{purpose}' at {time}.")
+        sheet.append_row([
+            query.from_user.username or query.from_user.full_name,
+            action, purpose, date, action_time, submitted_at,
+            str(query.message.message_id if query.message else "N/A")
+        ])
+        await query.message.reply_text(f"✅ {action} shed for '{purpose}' at {action_time}.")
+        del user_states[user_id]
     except Exception as e:
-        await update.message.reply_text("❌ Error logging data. Try again later.")
-        print("Google Sheets Error:", e)
+        logger.error(f"Google Sheets Error: {e}")
+        await query.message.reply_text("❌ Error logging data. Try again later.")
 
-# Webhook route for Telegram updates
+async def start_bot():
+    print("Starting Telegram bot...")
+    await application.initialize()
+    await application.start()
+    await asyncio.Event().wait()
+
+#Temporary functions for obtaining chat_id and message_thread_id
+# async def debug_log_ids(update: Update, context: CallbackContext):
+#     if update.message:
+#         print("Chat ID:", update.effective_chat.id)
+#         print("Message Thread ID:", update.message.message_thread_id)
+
+# application.add_handler(MessageHandler(filters.ALL, debug_log_ids))
+
+#Register Handlers once
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CallbackQueryHandler(action_selected, pattern="^(open|close|open & close)$"))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, purpose_entered))
+application.add_handler(CallbackQueryHandler(hour_selected, pattern="^hour_\\d+$"))
+application.add_handler(CallbackQueryHandler(minute_selected, pattern="^minute_\\d+$"))
+
+
 @app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    update = Update.de_json(request.get_json(), bot)
-    dispatcher.process_update(update)
-    return "OK", 200
+async def telegram_webhook():
+    data = await request.get_json()
+    update = Update.de_json(data, application.bot)
+    await application.process_update(update)
+    return "OK"
 
-# Health check route for UptimeRobot
-@app.route("/")
-def index():
-    return "Bot is running!", 200
 
-# Run Flask app
+#Health check endpoint
+@app.route("/health", methods=["GET"])
+async def health():
+    return jsonify({"status": "Bot is running"}), 200
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+
+    async def run_all():
+        await application.initialize()
+        await application.start()
+        print("✅ Bot initialized and handlers registered.")
+
+        config = uvicorn.Config(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+        server = uvicorn.Server(config)
+        await server.serve()
+
+    asyncio.run(run_all())
+
+

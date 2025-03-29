@@ -1,0 +1,28 @@
+# This file specifies files that are *not* uploaded to Google Cloud Platform
+# using gcloud.
+
+# If you would like to upload your .git directory, .gitignore file or files
+# from your .gitignore file, remove the corresponding line below:
+.git
+.gcloudignore
+.dockerignore
+
+# Python pycache
+__pycache__/
+
+# Node.js dependencies
+node_modules/
+
+# Logs
+logs/
+*.log
+
+# Exclude the .env file if it contains sensitive information
+.env
+
+# Ignore Google credentials files
+google_credentials.json
+scenic-sphere-453321-t0-1d33cf523909.json
+google_credentials_base64.txt
+
+.ps1
