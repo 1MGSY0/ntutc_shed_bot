@@ -22,7 +22,6 @@ logs/
 
 # Ignore Google credentials files
 google_credentials.json
-scenic-sphere-453321-t0-1d33cf523909.json
-google_credentials_base64.txt
+encoded.txt
 
 .ps1

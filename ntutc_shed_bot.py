@@ -46,12 +46,9 @@ user_states = {}
 def authenticate_google_sheets():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
-    logger = logging.getLogger(PROJECT_ID)
-
     try:
         decoded_json = base64.b64decode(GOOGLE_CREDENTIALS_JSON).decode("utf-8")
         creds_dict = json.loads(decoded_json)
-        print("Decoded preview:", decoded_json[:100])
     except Exception as e:
         logger.error("❌ Failed to decode GOOGLE_CREDENTIALS_JSON: %s", e)
         creds_dict = {}
@@ -111,19 +108,27 @@ async def hour_selected(update: Update, context: CallbackContext) -> None:
 async def minute_selected(update: Update, context: CallbackContext) -> None:
     query = update.callback_query
     user_id = query.from_user.id
-    minute = int(query.data.split("_")[1])
-    state = user_states[user_id]
-
-    action = state["action"]
-    purpose = state["purpose"]
-    hour = state["hour"]
-    action_time = f"{hour:02}:{minute:02}"
-    now = datetime.datetime.now()
-    date = now.strftime("%Y-%m-%d")
-    submitted_at = now.strftime("%Y-%m-%d %H:%M:%S")
 
     try:
-        sheet = authenticate_google_sheets()
+        # Step 1: Parse the selected minute
+        minute = int(query.data.split("_")[1])
+        state = user_states.get(user_id, {})
+        action = state.get("action")
+        purpose = state.get("purpose")
+        hour = state.get("hour")
+
+        if None in (action, purpose, hour):
+            logger.warning(f"[{user_id}] Incomplete user state: {state}")
+            await query.message.reply_text("❌ Incomplete session. Please restart with /start.")
+            return
+
+        # Step 2: Format timestamps
+        action_time = f"{hour:02}:{minute:02}"
+        now = datetime.datetime.now()
+        date = now.strftime("%Y-%m-%d")
+        submitted_at = now.strftime("%Y-%m-%d %H:%M:%S")
+
+        # Step 3: Prepare the log message
         log_message = (
             f"Shed Activity Log\n"
             f"👤 {query.from_user.username or query.from_user.full_name}\n"
@@ -131,22 +136,59 @@ async def minute_selected(update: Update, context: CallbackContext) -> None:
             f"🎯 {purpose}\n"
             f"🕒 {action_time}"
         )
-        chat_id = int(CHANNEL_USERNAME) if CHANNEL_USERNAME.startswith("-") else CHANNEL_USERNAME
-        if TOPIC_THREAD_ID:
-            await context.bot.send_message(chat_id=chat_id, text=log_message, message_thread_id=int(TOPIC_THREAD_ID))
-        else:
-            await context.bot.send_message(chat_id=chat_id, text=log_message)
 
-        sheet.append_row([
-            query.from_user.username or query.from_user.full_name,
-            action, purpose, date, action_time, submitted_at,
-            str(query.message.message_id if query.message else "N/A")
-        ])
+        # Step 4: Write to Google Sheet FIRST
+        try:
+            sheet = authenticate_google_sheets()
+            # Only proceed to Telegram if sheet write succeeds
+        except Exception as sheet_err:
+            logger.error(f"[{user_id}] ❌ Failed to authenticate or access Google Sheet: {sheet_err}")
+            await query.message.reply_text("❌ Could not access Google Sheet. Try again later.")
+            return
+
+        # Step 5: Send to Telegram
+        chat_id = int(CHANNEL_USERNAME) if CHANNEL_USERNAME.startswith("-") else CHANNEL_USERNAME
+        logger.info(f"[{user_id}] Sending log to chat {chat_id} with thread {TOPIC_THREAD_ID}")
+        try:
+            if TOPIC_THREAD_ID:
+                sent_msg = await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=log_message,
+                    message_thread_id=int(TOPIC_THREAD_ID)
+                )
+            else:
+                sent_msg = await context.bot.send_message(chat_id=chat_id, text=log_message)
+        except Exception as tele_err:
+            logger.error(f"[{user_id}] ❌ Failed to send message to Telegram: {tele_err}")
+            await query.message.reply_text("❌ Could not send log to Telegram. Try again later.")
+            return
+
+        # Step 6: Now log to Google Sheet since both succeeded
+        try:
+            sheet.append_row([
+                query.from_user.username or query.from_user.full_name,
+                action,
+                purpose,
+                date,
+                action_time,
+                submitted_at,
+                str(sent_msg.message_id)
+            ])
+        except Exception as sheet_write_err:
+            logger.error(f"[{user_id}] ❌ Failed to write row to Google Sheet: {sheet_write_err}")
+            await query.message.reply_text("❌ Could not save log to Google Sheet. Try again later.")
+            return
+
+        # Step 7: Confirm success
         await query.message.reply_text(f"✅ {action} shed for '{purpose}' at {action_time}.")
         del user_states[user_id]
+
     except Exception as e:
-        logger.error(f"Google Sheets Error: {e}")
-        await query.message.reply_text("❌ Error logging data. Try again later.")
+        logger.exception(f"[{user_id}] Unexpected error in minute_selected: {e}")
+        await query.message.reply_text("❌ An unexpected error occurred. Please try again.")
+
+
+
 
 async def guideline(update: Update, context: CallbackContext) -> None:
     guideline_text = (

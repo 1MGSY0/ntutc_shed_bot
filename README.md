@@ -132,8 +132,8 @@ Enable the following APIs:
 3. Create a JSON key and download it as 🗂️`google_credentials.json`.
 
 Convert it to base64:
-```bash
-base64 google_credentials.json > encoded.txt
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("google_credentials.json")) > encoded.txt
 ```
 Paste the content of 🗂️`encoded.txt` into 📝`GOOGLE_CREDENTIALS_JSON` in your 🗂️`.env`.
 
@@ -173,26 +173,26 @@ The bot can also send logs to a **specific topic (thread)** in a **private Teleg
 1. Download and install the Google Cloud SDK 👉[Google Cloud CLI](https://cloud.google.com/sdk/docs/install).
 2. After installation, authenticate your account:
 
-```bash
+```powershell
 gcloud auth login
 ```
 3. Then, select or create your project:
 
-```bash
+```powershell
 gcloud config set project YOUR_PROJECT_ID
 ```
 
 4. Run the following command to enable Cloud Run and Cloud Build:
 
-```bash
+```powershell
 gcloud services enable run.googleapis.com cloudbuild.googleapis.com
 ```
 
 ---
 5. Run and Deploy:
-   ```
-   .\deploy.ps1
-   ```
+```powershell
+.\deploy.ps1
+```
 
 This script deploys your bot and sets up the environment on Cloud Run.
 

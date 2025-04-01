@@ -6,3 +6,5 @@ node_modules/
 .env
 docker-compose.yml
 .ps1
+google_credentials.json
+encoded.txt
